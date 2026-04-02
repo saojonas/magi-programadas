@@ -21,13 +21,20 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 # =========================
 def parse_eq(x):
     try:
-        return json.loads(x) if isinstance(x, str) else x
+        return json.loads(x) if isinstance(x, str) else (x if isinstance(x, dict) else {})
     except:
         return {}
 
-def fmt_dt(s):
-    s = pd.to_datetime(s, utc=True, errors="coerce")
+def fmt_dt(col):
+    s = pd.to_datetime(col, utc=True, errors="coerce")
     return s.dt.tz_convert("America/Sao_Paulo").dt.strftime("%d/%m %H:%M")
+
+def pick_eq_value(eq, *keys, default=""):
+    for k in keys:
+        v = eq.get(k)
+        if pd.notna(v) and str(v).strip():
+            return str(v).strip()
+    return default
 
 # =========================
 # DATA
@@ -71,22 +78,33 @@ def load():
 
         df_vm = df_v.merge(df_m, left_on="manutentor_id", right_on="id", how="left")
 
-        df_vm["nome"] = df_vm.apply(
-            lambda r: r["apelido"] if r["apelido"] else r["nome"], axis=1
+        df_vm["nome_exib"] = df_vm.apply(
+            lambda r: r["apelido"] if pd.notna(r["apelido"]) and str(r["apelido"]).strip() else r["nome"],
+            axis=1
         )
 
-        df_mecs = df_vm.groupby("os_id")["nome"] \
-            .agg(lambda x: ", ".join(sorted(set(x)))) \
-            .reset_index() \
-            .rename(columns={"nome": "mecanicos"})
+        df_mecs = (
+            df_vm.groupby("os_id")["nome_exib"]
+            .agg(lambda x: ", ".join(sorted(set(x))))
+            .reset_index()
+            .rename(columns={"nome_exib": "mecanicos"})
+        )
 
         df = df.merge(df_mecs, left_on="id", right_on="os_id", how="left")
 
     df["mecanicos"] = df["mecanicos"].fillna("—")
 
-    # equipamento
+    # equipamento / setor
     eq = df["equipamento"].apply(parse_eq)
-    df["equip"] = eq.apply(lambda x: f"{x.get('id','')} - {x.get('desc','')}")
+
+    df["equip_id"] = eq.apply(lambda x: pick_eq_value(x, "id"))
+    df["equip_desc"] = eq.apply(lambda x: pick_eq_value(x, "descr", "desc"))
+    df["setor"] = eq.apply(lambda x: pick_eq_value(x, "setor", "sector", "area", "secao", "linha", default="—"))
+
+    df["equip"] = df.apply(
+        lambda r: f"{r['equip_id']} - {r['equip_desc']}" if r["equip_id"] or r["equip_desc"] else "—",
+        axis=1
+    )
 
     # datas
     df["created"] = fmt_dt(df["created_at"])
@@ -119,6 +137,7 @@ st.dataframe(
         "id",
         "type",
         "status",
+        "setor",
         "equip",
         "descricao",
         "solicitante",
@@ -129,6 +148,7 @@ st.dataframe(
         "id": "Ordem",
         "type": "Tipo",
         "status": "Status",
+        "setor": "Setor",
         "equip": "Equipamento",
         "descricao": "Descrição",
         "solicitante": "Solicitante",
@@ -151,6 +171,7 @@ for _, r in df.iterrows():
 
 - Ordem: `{r['id']}`
 - Tipo: {r['type']} | Status: {r['status']}
+- Setor: {r['setor']}
 - Mecânicos: {r['mecanicos']}
 - Criada: {r['created']} | Início: {r['inicio']}
 """)
